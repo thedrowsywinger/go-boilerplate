@@ -18,7 +18,25 @@ var refreshSecret = []byte(os.Getenv("REFRESH_SECRET"))
 func Signup(c *gin.Context) {
 	var newUser models.User
 	if err := c.ShouldBindJSON(&newUser); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input format"})
+		return
+	}
+
+	// Validate required fields
+	if newUser.Email == "" || newUser.HashedPassword == "" || newUser.FirstName == "" || newUser.LastName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "All fields are required (firstName, lastName, email, password)"})
+		return
+	}
+
+	// Validate email format
+	if !utils.IsValidEmail(newUser.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email format"})
+		return
+	}
+
+	// Validate password length
+	if len(newUser.HashedPassword) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 6 characters long"})
 		return
 	}
 
@@ -39,25 +57,39 @@ func Signup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User created successfully"})
 }
 
-// Login function
 func Login(c *gin.Context) {
-	var user models.User
-	if err := c.ShouldBindJSON(&user); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	var loginRequest struct {
+		Email    string `json:"email" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&loginRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email and password are required"})
+		return
+	}
+
+	// Validate email format
+	if !utils.IsValidEmail(loginRequest.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email format"})
 		return
 	}
 
 	// Find user by email
-	dbUser, err := services.GetUserByEmail(user.Email)
-	if err != nil || !utils.CheckPasswordHash(user.HashedPassword, dbUser.HashedPassword) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+	dbUser, err := services.GetUserByEmail(loginRequest.Email)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		return
+	}
+
+	if !utils.CheckPasswordHash(loginRequest.Password, dbUser.HashedPassword) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
 	// Create access token
 	accessExpirationTime := time.Now().Add(15 * time.Minute) // Access token expires in 15 minutes
 	accessClaims := &models.Claims{
-		Username: user.Email,
+		Username: loginRequest.Email,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: accessExpirationTime.Unix(),
 		},
@@ -73,7 +105,7 @@ func Login(c *gin.Context) {
 	// Create refresh token
 	refreshExpirationTime := time.Now().Add(24 * time.Hour) // Refresh token expires in 24 hours
 	refreshClaims := &models.Claims{
-		Username: user.Email,
+		Username: loginRequest.Email,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: refreshExpirationTime.Unix(),
 		},
