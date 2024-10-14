@@ -5,6 +5,7 @@ import (
 	"go-boilerplate/services"
 	"go-boilerplate/utils"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
@@ -12,6 +13,7 @@ import (
 )
 
 var jwtKey = []byte("your_secret_key")
+var refreshSecret = []byte(os.Getenv("REFRESH_SECRET"))
 
 func Signup(c *gin.Context) {
 	var newUser models.User
@@ -37,6 +39,7 @@ func Signup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User created successfully"})
 }
 
+// Login function
 func Login(c *gin.Context) {
 	var user models.User
 	if err := c.ShouldBindJSON(&user); err != nil {
@@ -46,34 +49,89 @@ func Login(c *gin.Context) {
 
 	// Find user by email
 	dbUser, err := services.GetUserByEmail(user.Email)
-	if err != nil {
+	if err != nil || !utils.CheckPasswordHash(user.HashedPassword, dbUser.HashedPassword) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// Check password
-	if !utils.CheckPasswordHash(user.HashedPassword, dbUser.HashedPassword) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	expirationTime := time.Now().Add(1 * time.Hour) // Set expiration to 1 hour for easier testing
-
-	claims := &models.Claims{
+	// Create access token
+	accessExpirationTime := time.Now().Add(15 * time.Minute) // Access token expires in 15 minutes
+	accessClaims := &models.Claims{
 		Username: user.Email,
 		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
+			ExpiresAt: accessExpirationTime.Unix(),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtKey)
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessTokenString, err := accessToken.SignedString(jwtKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to generate access token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"token": tokenString})
+	// Create refresh token
+	refreshExpirationTime := time.Now().Add(24 * time.Hour) // Refresh token expires in 24 hours
+	refreshClaims := &models.Claims{
+		Username: user.Email,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: refreshExpirationTime.Unix(),
+		},
+	}
+
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshTokenString, err := refreshToken.SignedString(refreshSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to generate refresh token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"accessToken":  accessTokenString,
+		"refreshToken": refreshTokenString,
+	})
+}
+
+// Refresh Token function
+func RefreshToken(c *gin.Context) {
+	var req struct {
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Parse and validate the refresh token
+	claims := &models.Claims{}
+	token, err := jwt.ParseWithClaims(req.RefreshToken, claims, func(token *jwt.Token) (interface{}, error) {
+		return refreshSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		return
+	}
+
+	// Generate a new access token
+	newAccessExpirationTime := time.Now().Add(15 * time.Minute)
+	newClaims := &models.Claims{
+		Username: claims.Username,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: newAccessExpirationTime.Unix(),
+		},
+	}
+
+	newAccessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims)
+	newAccessTokenString, err := newAccessToken.SignedString(jwtKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to generate new access token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"accessToken": newAccessTokenString,
+	})
 }
 
 func Welcome(c *gin.Context) {
